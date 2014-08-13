@@ -1,0 +1,192 @@
+#!/usr/bin/python
+# -*- encoding: utf-8; py-indent-offset: 4 -*-
+# +-----------------------------------------------------------------+
+# |                                                                 |
+# |        (  ___ \     | \    /\|\     /||\     /|( (    /|        |
+# |        | (   ) )    |  \  / /| )   ( || )   ( ||  \  ( |        |
+# |        | (__/ /     |  (_/ / | |   | || (___) ||   \ | |        |
+# |        |  __ (      |   _ (  | |   | ||  ___  || (\ \) |        |
+# |        | (  \ \     |  ( \ \ | |   | || (   ) || | \   |        |
+# |        | )___) )_   |  /  \ \| (___) || )   ( || )  \  |        |
+# |        |/ \___/(_)  |_/    \/(_______)|/     \||/    )_)        |
+# |                                                                 |
+# | Copyright Bastian Kuhn 2011                mail@bastian-kuhn.de | 
+# +-----------------------------------------------------------------+
+#
+# This file is a check Script for check_mk
+# Information about me can be found at http://bastian-kuhn.de
+# Information about check_mk at http://mathias-kettner.de/check_mk.
+#
+# This is free software;  you can redistribute it and/or modify it
+# under the  terms of the  GNU General Public License  as published by
+# the Free Software Foundation in version 2.  check_mk is  distributed
+# in the hope that it will be useful, but WITHOUT ANY WARRANTY;  with-
+# out even the implied warranty of  MERCHANTABILITY  or  FITNESS FOR A
+# PARTICULAR PURPOSE. See the  GNU General Public License for more de-
+# ails.  You should have  received  a copy of the  GNU  General Public
+# License along with GNU Make; see the file  COPYING.  If  not,  write
+# to the Free Software Foundation, Inc., 51 Franklin St,  Fifth Floor,
+# Boston, MA 02110-1301 USA.
+#
+# Updated for different data types and ranges by Florian Heigl
+# <fh@mathias-kettner.de>
+
+# Example Output:
+
+# Aborted_clients       246
+# Aborted_connects      69
+# Binlog_cache_disk_use 0
+# Binlog_cache_use      0
+
+
+# Auf Dict umstellen und muesste man das mergen... *g*
+mysql_status_vars = []
+
+# No need to list Gauge type -  assumed per default
+# If you add a counter/bool to your .mk file, make sure it 
+# is known in here
+mysql_status_types = {
+    "Aborted_clients"                : "Counter",
+    "Aborted_connects"               : "Counter",
+    "Compression"                    : "Boolean",
+    "Connections"                    : "Counter",
+    "Bytes_received"                 : "Counter",
+    "Bytes_sent"                     : "Counter",
+    "Created_tmp_files"              : "Counter",
+    "Table_locks_waited"             : "Counter",
+    "Slow_queries"                   : "Counter",
+    "Slow_launch_threads"            : "Counter",
+    "Qcache_hits"                    : "Counter",
+    "Qcache_not_cached"              : "Counter",
+    "Qcache_low_mem_prunes"          : "Counter",
+    "Slave_retried_transactions"     : "Counter",
+    "Slave_running"                  : "Boolean",
+    "Queries"                        : "Counter",
+    "Created_tmp_disk_tables"        : "Counter", 
+    "Created_tmp_tables"             : "Counter",
+    "Slave_retried_transactions"     : "Counter", 
+    "Slave_running"                  : "Boolean",
+    "Master_SSL_Allowed"	     : "Boolean",
+}
+
+
+# Since the global status output doesn't tell you, 
+# we have another list of values where a high gauge is
+# good.
+negative_values = [ 
+    "Qcache_free_memory",
+    "Innodb_buffer_pool_pages_free", 
+    "Qcache_free_blocks" 
+]
+
+ 
+
+
+def inventory_mysql_status(checkname, info):
+   inventory = []
+   for line in info:
+      for status_var,warn,crit in mysql_status_vars:
+	if status_var == line[0]:
+	  inventory.append((status_var,(warn,crit)))
+	  break
+   return inventory
+
+
+def check_mysql_status(item, params, info):
+   queryinfo = {}
+   for line in info:
+       if item == line[0]:
+           perfdata = []
+           # Force status variable type if unknown (emulate old behaviour)
+           vartype = "Gauge"
+           try:
+               vartype = mysql_status_types[item]
+           except:
+               mysql_status_types[item] = vartype
+
+
+           if vartype == "Counter":
+               output = ""
+               this_time = time.time()
+               warn, crit = params
+               counter_wrapped = None
+               value = saveint(line[1])
+               try:
+                   timedif, items_per_sec = get_counter("mysql_status." + item, this_time, value)
+                   perfdata.append (( item, "%d" % value ))
+                   output = ("rate is %d/s") % items_per_sec
+               except MKCounterWrapped, e:
+                   counter_wrapped = e 
+                   continue
+
+               changed = items_per_sec * timedif
+               state = 0
+               if warn != None or crit != None:
+                   levels = ("%s/%s") % params
+                   # Only process this stuff if something changed.
+                   # Averages will be needed on this?
+                   if   changed > 0 and changed >= crit:
+                       state = 2
+                   elif changed > 0 and changed >= warn:
+                       state = 1
+                   else:
+                       state = 0
+               return (state, "%s - "% nagios_state_names[state] + output, perfdata)
+
+
+           elif vartype == "Boolean":
+               # MySQL knows OFF and ON
+               value = line[1]
+               warn, crit = params
+               output = ("%s is %s") % (item, value)
+               if crit != "None" or warn != "None":
+                   if   value == crit: 
+                       state = 2
+                       return (2, "CRITICAL - %s is %s!!"   % (item, value))
+                   elif value == warn: 
+                       state = 1 
+                       return (1, "WARN - %s is %s!"        % (item, value))
+               state = 0
+               return (0, "OK - %s is %s" % (item, value))
+                  
+
+           elif vartype == "Gauge":
+               warn, crit = params
+               value = saveint(line[1])
+
+               # FIXME: This could be prettier, but i heard overloading is evil.
+               state = 0
+               output   = ("value %d, levels (%s/%s)") % (value, warn, crit)
+               if item in negative_values:
+                   if   crit != None and value <= crit:
+                       state = 2
+                   elif warn != None and value <= warn:
+                       state = 1
+                   else:
+                       state = 0
+               else:
+                   if   crit != None and value >= crit:
+                       state = 2
+                   elif warn != None and value >= warn:
+                       state = 1
+                   else:
+                       state = 0
+ 
+               perfdata.append (( item, "%d" % value ))
+               return (state, "%s - "% nagios_state_names[state] + output, perfdata)
+
+
+   # Pass on info for the web interface
+   # if we tripped over a uninitialized counter
+   if counter_wrapped: 
+       raise counter_wrapped
+
+
+
+   return (3, "UNKNOWN - variable %s missing in Agent output" % item)
+
+
+check_info['mysql_status'] = \
+      (check_mysql_status, "MySQL Status %s", 1, inventory_mysql_status)
+
+
