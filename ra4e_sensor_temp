@@ -43,7 +43,7 @@ def check_ra4e_sensor_temp(item, params, info):
     for tempc, tempf, desc in info:
         if desc == item:
             warn, crit = params
-            temp = tempc/100
+	    temp = (int(tempc)/100)
             if tempc != "" and tempf != "":
                 infotext = "%.1f " % temp + "C (warn/crit at %.1f/%.1f " % (warn, crit) + "C)"
                 perfdata = [ ( "temperature", temp, warn, crit ) ]
